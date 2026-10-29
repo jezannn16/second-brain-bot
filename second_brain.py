@@ -145,34 +145,37 @@ def fetch_url(url: str, timeout: float = 8) -> tuple[str, str]:
             connection, response = _open_pinned(parsed, timeout)
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
             raise ValueError("Could not fetch URL; check address and connectivity") from exc
-        with connection, response:
-            if response.status in (301, 302, 303, 307, 308) and response.getheader("Location"):
-                current = urllib.parse.urljoin(current, response.getheader("Location"))
-                continue
-            if response.status < 200 or response.status >= 300:
-                raise ValueError(f"URL fetch failed with HTTP {response.status}")
-            content_type = response.getheader("Content-Type", "text/plain").split(";", 1)[0].strip().lower()
-            ctype = content_type
-            if ctype not in ("text/html", "text/plain"):
-                raise ValueError("URL must return text/html or text/plain")
-            raw = response.read(MAX_BYTES + 1)
-            if len(raw) > MAX_BYTES:
-                raise ValueError("URL content exceeds the 8 MiB limit")
-            charset = "utf-8"
-            content_type_header = response.getheader("Content-Type", "")
-            for part in content_type_header.split(";")[1:]:
-                key, _, value = part.strip().partition("=")
-                if key.lower() == "charset" and value.strip('"'):
-                    charset = value.strip('"')
-            try:
-                decoded = raw.decode(charset, errors="replace")
-            except LookupError as exc:
-                raise ValueError("URL uses an unsupported text encoding") from exc
-            if ctype == "text/html":
-                parser = TextExtractor()
-                parser.feed(decoded)
-                decoded = " ".join(parser.parts)
-            return current, re.sub(r"\s+", " ", decoded).strip()
+        try:
+            with response:
+                if response.status in (301, 302, 303, 307, 308) and response.getheader("Location"):
+                    current = urllib.parse.urljoin(current, response.getheader("Location"))
+                    continue
+                if response.status < 200 or response.status >= 300:
+                    raise ValueError(f"URL fetch failed with HTTP {response.status}")
+                content_type = response.getheader("Content-Type", "text/plain").split(";", 1)[0].strip().lower()
+                ctype = content_type
+                if ctype not in ("text/html", "text/plain"):
+                    raise ValueError("URL must return text/html or text/plain")
+                raw = response.read(MAX_BYTES + 1)
+                if len(raw) > MAX_BYTES:
+                    raise ValueError("URL content exceeds the 8 MiB limit")
+                charset = "utf-8"
+                content_type_header = response.getheader("Content-Type", "")
+                for part in content_type_header.split(";")[1:]:
+                    key, _, value = part.strip().partition("=")
+                    if key.lower() == "charset" and value.strip('"'):
+                        charset = value.strip('"')
+                try:
+                    decoded = raw.decode(charset, errors="replace")
+                except LookupError as exc:
+                    raise ValueError("URL uses an unsupported text encoding") from exc
+                if ctype == "text/html":
+                    parser = TextExtractor()
+                    parser.feed(decoded)
+                    decoded = " ".join(parser.parts)
+                return current, re.sub(r"\s+", " ", decoded).strip()
+        finally:
+            connection.close()
     raise ValueError("Too many redirects")
 
 

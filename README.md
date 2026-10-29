@@ -1,40 +1,92 @@
 # Second Brain
 
-Local-first notes and document library with deterministic full-text baseline retrieval. Python 3.11+, SQLite, no account or API key required.
+![Second Brain — private notes and document library banner with source cards connected to a cited passage.](assets/banner.svg)
 
-## Implemented
+**A private, local-first library for notes and documents.** Save text, Markdown, PDFs, and public web pages in SQLite, then retrieve source passages with deterministic full-text search and citations.
 
-- Save notes and import Markdown/text/PDF files (PDF extraction uses optional `pypdf`). 8 MiB input ceiling, extension and PDF signature checks, source/hash/tag/status metadata.
-- Import public HTTP(S) HTML/text URLs with timeout, bounded body, content-type check, limited redirects and public-IP validation on each redirect.
-- Search across Russian/English text, filter by exact tag, show source snippets, export JSON, delete by id. Duplicate content hashes are skipped.
-- `ask` is retrieval-only and returns source passages or a clear no-evidence refusal. There is no LLM, so untrusted source text cannot issue tool actions.
-- Optional Telegram long-poll bot for allow-listed users: save/search/ask/delete, source citations, URL ingestion and TXT/MD/PDF uploads; records are isolated by Telegram user ID. Files above 2 MiB require `/confirm`, with an 8 MiB maximum.
+[![CI](https://github.com/jezannn16/second-brain-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/jezannn16/second-brain-bot/actions/workflows/ci.yml)
+
+[Features](#what-it-does) · [Quick start](#quick-start) · [URL import](#import-a-public-url) · [Telegram](#optional-telegram-bot) · [Tests](#tests-and-ci) · [Data and scope](#data-and-scope)
+
+## What it does
+
+| Input | Available now |
+| --- | --- |
+| Notes and files | Save notes and import `.txt`, `.md`, and `.pdf` files (PDF support is optional) |
+| Public pages | Fetch bounded HTTP(S) text/HTML from public IP addresses, validating redirects |
+| Retrieval | Search Russian and English text, filter by tag, and show source snippets |
+| Answers | Return matching passages with citations, or say when there is no evidence |
+| Telegram | Optional allow-listed long-poll bot for private save/search/ask workflows |
+| Storage | Local SQLite; no account or model API key required |
+
+`ask` is retrieval-only. It does not call an LLM or execute instructions found in stored documents.
 
 ## Quick start
 
+Requires Python 3.11 or newer.
+
 ```sh
-python3 -m venv .venv && . .venv/bin/activate
-python -m pip install pytest ruff
-# Optional PDF extraction:
-python -m pip install pypdf
-python second_brain.py --db brain.sqlite3 note 'Reading list' 'Проверить заметки по SQL.' --tags work,sql
-python second_brain.py --db brain.sqlite3 search 'заметки SQL' --tag work
-python second_brain.py --db brain.sqlite3 ask 'заметки SQL'
-python second_brain.py --db brain.sqlite3 export
-pytest -q
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+# Optional, for PDF extraction:
+python -m pip install -e '.[pdf]'
 ```
 
-To run Telegram, create a bot with BotFather, copy `.env.example` to `.env`, set the token and numeric user allowlist, then load and run it:
+Try notes, search, and a cited answer in a throwaway database:
 
 ```sh
+python second_brain.py --db /tmp/brain-demo.sqlite3 note 'SQL checklist' \
+  'For analytics, validate SQL queries against test data before publishing.' --tags work,sql
+python second_brain.py --db /tmp/brain-demo.sqlite3 search 'SQL analytics' --tag work
+python second_brain.py --db /tmp/brain-demo.sqlite3 ask 'How should analytics SQL be checked?'
+```
+
+The answer contains a passage from the saved note and its document ID, source, and content version. Try `ask 'unrelated topic'` to see the no-evidence response.
+
+## Import a public URL
+
+URL import requires network access but no credentials. It accepts public HTTP(S) pages returning HTML or plain text, with an 8 MiB body limit and up to three redirects:
+
+```sh
+python second_brain.py --db /tmp/brain-demo.sqlite3 url https://example.com --tags web
+python second_brain.py --db /tmp/brain-demo.sqlite3 search 'example domain'
+```
+
+Use pages you are permitted to fetch. Private, loopback, and non-public resolved IP addresses are rejected. The fetcher connects to the exact public address it checked, preserves HTTPS certificate/hostname validation, and checks every redirect target.
+
+## Optional Telegram bot
+
+The bot uses long polling and fails closed unless an allowlist is set. It needs a bot token from [BotFather](https://t.me/BotFather) and your numeric Telegram user ID. Keep both in a local `.env` file, which is ignored by Git; never paste a token into an issue, commit, or chat.
+
+```sh
+cp .env.example .env
+# Edit .env locally: set the BotFather token and only your own numeric user ID.
 set -a; . .env; set +a
 python telegram_bot.py
 ```
 
-The bot exits with a configuration error when the allowlist is missing. It polls only; it does not run a public webhook server.
+The bot sends replies when an allow-listed user sends a command. Start with synthetic notes and your own private bot/chat. Revoke a temporary token through BotFather after testing. Uploaded and fetched document content is stored locally.
 
-## Limitations / planned
+## Tests and CI
 
-No vector search, LLM generation/evaluation, or screenshot. PDF extraction is optional and scanned/image-only documents may yield no text. URL fetching resolves the hostname, rejects any non-global address, and connects directly to that exact resolved socket address; redirects are limited to three and validated again, while HTTPS retains certificate and hostname verification. Search citations include document ID and content-hash version; PDF extraction prefixes page numbers in extracted text. SQLite stores raw content and Telegram user IDs unencrypted. Search is a simple token-frequency baseline without stemming, date filters or ranking calibration. The bot uses long polling and requires a stable outbound internet connection.
+```sh
+pytest -q
+ruff check .
+```
 
-See [demo steps](docs/demo.md) for a synthetic end-to-end walkthrough.
+The default suite tests URL validation, redirects, retrieval, and bot behavior with controlled fakes. An optional live smoke test fetches `https://example.com` and verifies the public page can be retrieved; it is skipped unless explicitly enabled:
+
+```sh
+RUN_LIVE_TESTS=1 pytest -q -m live
+```
+
+This live check performs one public GET and stores nothing remotely. Network availability may affect the result.
+
+## Data and scope
+
+The SQLite database contains raw imported content and, when Telegram is used, Telegram user IDs. It is local and unencrypted; use a private directory and synthetic data for demos. Search uses token frequency without stemming or calibrated ranking. Scanned PDFs may produce no text.
+
+There is no vector search, LLM generation, webhook server, or public hosting. Telegram uploads are capped at 8 MiB; files over 2 MiB require an in-chat confirmation.
+
+See [demo steps](docs/demo.md) and [operator notes](telegram_bot.py) for the local workflow and bot entry point.

@@ -8,9 +8,16 @@ dependencies = []
 pdf = ["pypdf>=5,<7"]
 dev = ["pytest>=8", "ruff>=0.11"]
 
+[project.scripts]
+second-brain = "second_brain:main"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["live: opt-in read-only checks against public services"]
 
 [tool.ruff]
 line-length = 120
+
+[tool.setuptools]
+py-modules = ["second_brain", "telegram_bot"]

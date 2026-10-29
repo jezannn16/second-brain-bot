@@ -102,6 +102,38 @@ def test_http_connection_uses_the_ip_that_was_validated(monkeypatch):
     assert connected == [("8.8.8.8", 80)]
 
 
+def test_fetch_url_closes_http_connection_without_context_manager(monkeypatch):
+    closed = []
+
+    class FakeConnection:
+        def close(self):
+            closed.append(True)
+
+    class FakeResponse:
+        status = 200
+
+        def getheader(self, name, default=None):
+            return "text/html; charset=utf-8" if name == "Content-Type" else default
+
+        def read(self, size):
+            assert size == second_brain.MAX_BYTES + 1
+            return b"<html><title>Test</title><body>Readable page</body></html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(second_brain, "_open_pinned", lambda parsed, timeout: (FakeConnection(), FakeResponse()))
+
+    source, content = fetch_url("https://public.example")
+
+    assert source == "https://public.example"
+    assert content == "Test Readable page"
+    assert closed == [True]
+
+
 def test_redirect_to_private_address_is_rejected(monkeypatch):
     calls = []
     original_resolver = second_brain._resolve_public
@@ -122,11 +154,8 @@ def test_redirect_to_private_address_is_rejected(monkeypatch):
             return None
 
     class FakeConnection:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
+        def close(self):
+            pass
 
     def open_checked(parsed, timeout):
         calls.append(parsed.hostname)

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" role="img" aria-labelledby="title desc">
+  <title id="title">Second Brain</title>
+  <desc id="desc">A private notes and document library, illustrated as connected source cards with highlighted citations.</desc>
+  <defs>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#B7F36B" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#B7F36B" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="380" rx="28" fill="#0B1020"/>
+  <path d="M0 290C180 210 300 370 490 285s310-96 465-12 190 53 245 20v87H0Z" fill="url(#glow)"/>
+  <circle cx="1110" cy="54" r="2" fill="#B7F36B" opacity=".7"/>
+  <circle cx="1067" cy="92" r="1.5" fill="#B7F36B" opacity=".45"/>
+  <text x="72" y="98" fill="#B7F36B" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="3">PRIVATE KNOWLEDGE LIBRARY</text>
+  <text x="68" y="166" fill="#F4F7FB" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="54" font-weight="750" letter-spacing="-1.5">Second Brain</text>
+  <text x="72" y="211" fill="#AAB5CA" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="21">Keep sources close. Retrieve them with citations.</text>
+  <rect x="72" y="253" width="218" height="40" rx="20" fill="#151D31" stroke="#293550"/>
+  <circle cx="94" cy="273" r="5" fill="#B7F36B"/>
+  <text x="110" y="279" fill="#DFE6F1" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="600">Local notes &amp; documents</text>
+
+  <rect x="677" y="52" width="451" height="276" rx="20" fill="#151D31" stroke="#293550" stroke-width="1.5"/>
+  <text x="710" y="88" fill="#9CAAC1" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" letter-spacing="2">SOURCES → RETRIEVAL</text>
+  <path d="M815 153C858 153 857 202 900 202M815 256C858 256 857 202 900 202" fill="none" stroke="#52617D" stroke-width="2"/>
+  <rect x="710" y="113" width="138" height="80" rx="12" fill="#202A40" stroke="#34415D"/>
+  <rect x="722" y="125" width="26" height="33" rx="4" fill="#B7F36B" opacity=".95"/>
+  <path d="M728 134h14M728 141h14M728 148h10" stroke="#172016" stroke-width="2" stroke-linecap="round"/>
+  <text x="758" y="139" fill="#F4F7FB" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="650">Notes</text>
+  <text x="758" y="159" fill="#9CAAC1" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11">tags · text</text>
+  <rect x="710" y="217" width="138" height="80" rx="12" fill="#202A40" stroke="#34415D"/>
+  <path d="M725 234h20v27h-20zM729 229h20v27" fill="none" stroke="#B7F36B" stroke-width="2" stroke-linejoin="round"/>
+  <text x="758" y="250" fill="#F4F7FB" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="650">Documents</text>
+  <text x="758" y="270" fill="#9CAAC1" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11">PDF · Markdown</text>
+  <circle cx="900" cy="202" r="8" fill="#B7F36B"/>
+  <rect x="927" y="116" width="170" height="172" rx="14" fill="#0B1020" stroke="#3B4965"/>
+  <text x="945" y="143" fill="#B7F36B" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" letter-spacing="1">ANSWER WITH SOURCE</text>
+  <rect x="945" y="159" width="122" height="6" rx="3" fill="#68758E"/>
+  <rect x="945" y="175" width="136" height="6" rx="3" fill="#68758E"/>
+  <rect x="945" y="191" width="111" height="6" rx="3" fill="#68758E"/>
+  <rect x="942" y="211" width="139" height="38" rx="8" fill="#B7F36B" fill-opacity=".12" stroke="#B7F36B" stroke-opacity=".65"/>
+  <text x="953" y="227" fill="#B7F36B" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700">SQL checklist</text>
+  <text x="953" y="241" fill="#DCE7D2" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10">source passage</text>
+</svg>
