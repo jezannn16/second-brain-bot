@@ -14,7 +14,7 @@
 | --- | --- |
 | Notes and files | Save notes and import `.txt`, `.md`, and `.pdf` files (PDF support is optional) |
 | Public pages | Fetch bounded HTTP(S) text/HTML from public IP addresses, validating redirects |
-| Retrieval | Search Russian and English text, filter by tag, and show source snippets |
+| Retrieval | Search Russian and English text, filter by tag, exact source, and inclusive creation dates, then show source snippets |
 | Answers | Return matching passages with citations, or say when there is no evidence |
 | Telegram | Optional allow-listed long-poll bot for private save/search/ask workflows |
 | Storage | Local SQLite; no account or model API key required |
@@ -40,9 +40,10 @@ python second_brain.py --db /tmp/brain-demo.sqlite3 note 'SQL checklist' \
   'For analytics, validate SQL queries against test data before publishing.' --tags work,sql
 python second_brain.py --db /tmp/brain-demo.sqlite3 search 'SQL analytics' --tag work
 python second_brain.py --db /tmp/brain-demo.sqlite3 ask 'How should analytics SQL be checked?'
+python second_brain.py --db /tmp/brain-demo.sqlite3 search 'SQL analytics' --source note --after 2026-01-01 --before 2026-12-31
 ```
 
-The answer contains a passage from the saved note and its document ID, source, and content version. Try `ask 'unrelated topic'` to see the no-evidence response.
+The answer contains a passage from the saved note and its document ID, source, and content version. Search and ask accept `--tag`, `--source` (exact source value), `--after`, and `--before` (`YYYY-MM-DD`, inclusive) filters. Try `ask 'unrelated topic'` to see the no-evidence response.
 
 ## Import a public URL
 
@@ -66,7 +67,7 @@ set -a; . .env; set +a
 python telegram_bot.py
 ```
 
-The bot sends replies when an allow-listed user sends a command. Start with synthetic notes and your own private bot/chat. Revoke a temporary token through BotFather after testing. Uploaded and fetched document content is stored locally.
+The bot replies only in private chats to allow-listed users. `/search` and `/ask` support `--tag`, `--source`, `--after YYYY-MM-DD`, and `--before YYYY-MM-DD`; `/more` preserves those filters and shows a next-page command only when more matches exist. Start with synthetic notes and your own private bot/chat. Revoke a temporary token through BotFather after testing. Uploaded and fetched document content is stored locally.
 
 ## Tests and CI
 

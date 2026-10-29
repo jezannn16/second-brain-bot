@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from second_brain import MAX_BYTES, add_document, answer, connect, extract_pdf, search
@@ -75,26 +78,57 @@ class BotAPI:
         self.call("sendMessage", {"chat_id": chat_id, "text": text[:3900], "disable_web_page_preview": "true"})
 
 
-def _format_results(rows: list[dict[str, object]], page: int, query: str) -> str:
+def _format_results(
+    rows: list[dict[str, object]], page: int, query: str, filters: dict[str, str] | None = None,
+    has_more: bool = False,
+) -> str:
     if not rows:
         return "Ничего не найдено. Попробуйте другие слова или сохраните источник через /note."
     parts = [f"Найдено: страница {page + 1}"]
     for row in rows:
-        parts.append(f"[{row['id']}] {row['title']} — {row['source']} (v{row['version']})\n{row['snippet']}")
-    parts.append(f"Следующая страница: /more {page + 1} {query}")
-    return "\n\n".join(parts)
+        parts.append(f"[{row['id']}] {str(row['title'])[:120]} — {str(row['source'])[:180]} (v{row['version']})\n{str(row['snippet'])[:260]}")
+    if has_more:
+        args = ["/more", str(page + 1), shlex.quote(query)]
+        for key in ("tag", "source", "after", "before"):
+            value = (filters or {}).get(key)
+            if value:
+                args.extend((f"--{key}", shlex.quote(value)))
+        parts.append("Следующая страница: " + " ".join(args))
+    return "\n\n".join(parts)[:3900]
 
 
 def _query_tag(value: str) -> tuple[str, str]:
-    parts = value.split()
-    if "--tag" not in parts:
-        return value.strip(), ""
-    index = parts.index("--tag")
-    if index + 1 >= len(parts):
-        raise ValueError("Формат фильтра: --tag тег")
-    tag = parts[index + 1]
-    del parts[index : index + 2]
-    return " ".join(parts).strip(), tag
+    query, filters = _query_filters(value)
+    return query, filters.get("tag", "")
+
+
+def _query_filters(value: str) -> tuple[str, dict[str, str]]:
+    try:
+        parts = shlex.split(value)
+    except ValueError as exc:
+        raise ValueError("Не удалось разобрать запрос; проверьте кавычки.") from exc
+    flags = {"--tag": "tag", "--source": "source", "--after": "after", "--before": "before"}
+    query, filters, index = [], {}, 0
+    while index < len(parts):
+        token = parts[index]
+        if token not in flags:
+            query.append(token)
+            index += 1
+            continue
+        if index + 1 >= len(parts) or parts[index + 1].startswith("--"):
+            raise ValueError(f"Для {token} укажите значение.")
+        key = flags[token]
+        filters[key] = parts[index + 1]
+        index += 2
+    for key in ("after", "before"):
+        if key in filters:
+            try:
+                datetime.strptime(filters[key], "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError(f"--{key} укажите как YYYY-MM-DD.") from exc
+    if filters.get("after") and filters.get("before") and filters["after"] > filters["before"]:
+        raise ValueError("--after должно быть не позже --before.")
+    return " ".join(query).strip(), filters
 
 
 def handle_update(
@@ -107,12 +141,14 @@ def handle_update(
     chat = message.get("chat")
     if not isinstance(user, dict) or not isinstance(chat, dict):
         return
-    user_id = int(user.get("id", 0))
-    chat_id = int(chat.get("id", 0))
+    try:
+        user_id = int(user.get("id", 0))
+        chat_id = int(chat.get("id", 0))
+    except (TypeError, ValueError):
+        return
     if user_id not in allowed:
         return
     if chat.get("type") != "private":
-        api.send(chat_id, "Use the bot in a private chat so your sources stay private.")
         return
     text = str(message.get("text", "")).strip()
     command, _, argument = text.partition(" ")
@@ -122,7 +158,7 @@ def handle_update(
         if command in ("/start", "/help"):
             api.send(
                 chat_id,
-                "Second Brain: /note title | text | tag1,tag2; /search query --tag tag; /more page query; /ask question; /url https://…; /delete ID. Также можно прислать TXT/MD/PDF до 8 MiB.",
+                "Second Brain: /note заголовок | текст | теги; /search запрос [--tag тег] [--source источник] [--after YYYY-MM-DD] [--before YYYY-MM-DD]; /more страница запрос с теми же фильтрами; /ask вопрос [фильтры]; /url https://…; /delete ID. TXT/MD/PDF до 8 MiB.",
             )
         elif command == "/note":
             fields = [x.strip() for x in argument.split("|", 2)]
@@ -146,16 +182,22 @@ def handle_update(
                     return
             else:
                 page, query = 0, argument
-            query, tag = _query_tag(query)
+            query, filters = _query_filters(query)
             if not query:
                 api.send(chat_id, "Добавьте слова для поиска: /search текст")
                 return
             rows = search(
-                db, query, tag=tag, limit=MAX_TELEGRAM_PAGE, owner_id=user_id, offset=page * MAX_TELEGRAM_PAGE
+                db, query, tag=filters.get("tag", ""), limit=MAX_TELEGRAM_PAGE + 1,
+                owner_id=user_id, offset=page * MAX_TELEGRAM_PAGE, source=filters.get("source", ""),
+                created_after=filters.get("after", ""), created_before=filters.get("before", "")
             )
-            api.send(chat_id, _format_results(rows, page, query))
+            api.send(chat_id, _format_results(rows[:MAX_TELEGRAM_PAGE], page, query, filters, len(rows) > MAX_TELEGRAM_PAGE))
         elif command == "/ask":
-            result = answer(db, argument, owner_id=user_id)
+            question, filters = _query_filters(argument)
+            result = answer(
+                db, question, owner_id=user_id, tag=filters.get("tag", ""), source=filters.get("source", ""),
+                created_after=filters.get("after", ""), created_before=filters.get("before", "")
+            )
             response = [str(result["answer"])]
             for citation in result["citations"]:
                 response.append(
@@ -200,6 +242,7 @@ def handle_update(
             info = {"file_id": str(document.get("file_id", "")), "name": name}
             if size > CONFIRM_BYTES:
                 info["created_at"] = time.time()
+                pending_files[user_id] = info
                 api.send(
                     chat_id,
                     "Файл больше 2 MiB. Подтвердите импорт командой /confirm (содержимое будет сохранено локально).",
@@ -211,6 +254,9 @@ def handle_update(
     except (ValueError, OSError, RuntimeError, UnicodeError) as exc:
         db.rollback()
         api.send(chat_id, f"Не удалось обработать запрос: {exc}")
+    except sqlite3.Error:
+        db.rollback()
+        api.send(chat_id, "Не удалось прочитать или сохранить локальную базу. Проверьте доступ к файлу БД и повторите.")
     finally:
         db.close()
 

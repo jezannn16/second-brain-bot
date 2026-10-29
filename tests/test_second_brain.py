@@ -5,7 +5,7 @@ import pytest
 
 import second_brain
 from second_brain import add_document, answer, connect, extract_pdf, fetch_url, search
-from telegram_bot import _query_tag, handle_update, parse_allowlist
+from telegram_bot import _query_filters, _query_tag, handle_update, parse_allowlist
 
 
 def test_duplicate_search_tag_citation_delete(tmp_path):
@@ -53,12 +53,109 @@ def test_telegram_allowlist_and_user_scoped_search(tmp_path):
     assert _query_tag("поиск заметок --tag work") == ("поиск заметок", "work")
 
 
+def test_telegram_search_filters_pagination_and_group_privacy(tmp_path):
+    class FakeAPI:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, chat_id, text):
+            self.sent.append(text)
+
+    api = FakeAPI()
+    db_path = str(tmp_path / "brain.db")
+    db = connect(db_path)
+    for index in range(6):
+        add_document(db, "telegram-note", f"Alpha {index}", f"alpha phrase record {index}", "work", owner_id=50)
+    db.commit()
+    db.close()
+
+    def update(text, chat_type="private"):
+        return {"message": {"from": {"id": 50}, "chat": {"id": 50, "type": chat_type}, "text": text}}
+
+    handle_update(update("/search alpha phrase --tag work --source telegram-note"), api, db_path, {50}, {})
+    assert "страница 1" in api.sent[-1] and "/more 1" in api.sent[-1] and "--source" in api.sent[-1]
+    handle_update(update("/more 1 alpha phrase --tag work --source telegram-note"), api, db_path, {50}, {})
+    assert "страница 2" in api.sent[-1] and "Alpha 5" in api.sent[-1] and "/more 2" not in api.sent[-1]
+    handle_update(update("/ask alpha phrase --source telegram-note --after 2026-10-29"), api, db_path, {50}, {})
+    assert "telegram-note" in api.sent[-1]
+
+    sent_before_group_message = len(api.sent)
+    handle_update(update("/help", "group"), api, db_path, {50}, {})
+    assert len(api.sent) == sent_before_group_message
+
+    assert _query_filters('русский запрос --source "https://example.org/a b" --after 2026-10-01')[1]["source"] == "https://example.org/a b"
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        _query_filters("query --before yesterday")
+
+
+def test_telegram_large_file_confirmation_and_expiry(tmp_path):
+    class FakeAPI:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, chat_id, text):
+            self.sent.append(text)
+
+        def download(self, file_id):
+            assert file_id == "file-1"
+            return "notes.txt", b"A private uploaded note with sample content"
+
+    api = FakeAPI()
+    db_path = str(tmp_path / "brain.db")
+    pending = {}
+    update = {
+        "message": {
+            "from": {"id": 70}, "chat": {"id": 70, "type": "private"},
+            "document": {"file_id": "file-1", "file_name": "notes.txt", "file_size": 2_500_000},
+        }
+    }
+    handle_update(update, api, db_path, {70}, pending)
+    assert pending[70]["file_id"] == "file-1" and "подтвердите" in api.sent[-1].lower()
+    handle_update({"message": {"from": {"id": 70}, "chat": {"id": 70, "type": "private"}, "text": "/confirm"}}, api, db_path, {70}, pending)
+    db = connect(db_path)
+    assert db.execute("select count(*) from documents where owner_id=70").fetchone()[0] == 1
+    db.close()
+    handle_update(
+        {"message": {"from": {"id": 70}, "chat": {"id": 70, "type": "private"}, "text": "/confirm"}},
+        api, db_path, {70}, {70: {"file_id": "file-1", "name": "notes.txt", "created_at": 0}},
+    )
+    assert "ожидающей подтверждения" in api.sent[-1]
+
+
+def test_malformed_telegram_user_ids_are_ignored(tmp_path):
+    class FakeAPI:
+        def send(self, chat_id, text):
+            raise AssertionError("malformed update must be ignored")
+
+    handle_update(
+        {"message": {"from": {"id": "invalid"}, "chat": {"id": 1, "type": "private"}, "text": "/help"}},
+        FakeAPI(), str(tmp_path / "brain.db"), {1}, {},
+    )
+
+
 def test_empty_and_duplicate_text(tmp_path):
     db = connect(tmp_path / "brain.db")
     with pytest.raises(ValueError):
         add_document(db, "x", "y", "  ")
     assert search(db, "!!!") == []
     assert answer(db, "ничего")["citations"] == []
+
+
+def test_search_source_and_inclusive_date_filters(tmp_path):
+    db = connect(tmp_path / "brain.db")
+    first, _ = add_document(db, "https://docs.example/a", "First", "русский поиск для заметки", "work")
+    second, _ = add_document(db, "file.md", "Second", "русский поиск для файла", "work")
+    db.execute("UPDATE documents SET created_at='2026-10-01T12:00:00+00:00' WHERE id=?", (first,))
+    db.execute("UPDATE documents SET created_at='2026-10-02T12:00:00+00:00' WHERE id=?", (second,))
+    db.commit()
+
+    hits = search(db, "русский поиск", "work", source="file.md", created_after="2026-10-02", created_before="2026-10-02")
+    assert [item["id"] for item in hits] == [second]
+    assert answer(db, "русский поиск", source="https://docs.example/a", created_before="2026-10-01")["citations"][0]["document_id"] == first
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        search(db, "русский", created_after="yesterday")
+    with pytest.raises(ValueError, match="on or before"):
+        search(db, "русский", created_after="2026-10-03", created_before="2026-10-02")
 
 
 def test_ssrf_rejects_local_before_request():

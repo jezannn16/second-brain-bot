@@ -180,14 +180,39 @@ def fetch_url(url: str, timeout: float = 8) -> tuple[str, str]:
 
 
 def search(
-    db: sqlite3.Connection, query: str, tag: str = "", limit: int = 10, owner_id: int = 0, offset: int = 0
+    db: sqlite3.Connection,
+    query: str,
+    tag: str = "",
+    limit: int = 10,
+    owner_id: int = 0,
+    offset: int = 0,
+    source: str = "",
+    created_after: str = "",
+    created_before: str = "",
 ) -> list[dict[str, object]]:
+    for value, label in ((created_after, "--after"), (created_before, "--before")):
+        if value:
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError(f"{label} must use YYYY-MM-DD") from exc
+    if created_after and created_before and created_after > created_before:
+        raise ValueError("--after must be on or before --before")
     words = [w.casefold() for w in re.findall(r"[\w-]+", query) if len(w) > 1]
     if not words:
         return []
-    rows = db.execute(
-        "SELECT * FROM documents WHERE status='ready' AND owner_id=? ORDER BY created_at DESC", (owner_id,)
-    ).fetchall()
+    sql = "SELECT * FROM documents WHERE status='ready' AND owner_id=?"
+    params: list[object] = [owner_id]
+    if source:
+        sql += " AND source=?"
+        params.append(source)
+    if created_after:
+        sql += " AND substr(created_at,1,10)>=?"
+        params.append(created_after)
+    if created_before:
+        sql += " AND substr(created_at,1,10)<=?"
+        params.append(created_before)
+    rows = db.execute(sql + " ORDER BY created_at DESC", params).fetchall()
     results = []
     for row in rows:
         tags = [t.strip() for t in row["tags"].split(",") if t.strip()]
@@ -215,8 +240,19 @@ def search(
     return sorted(results, key=lambda x: (-int(x["score"]), int(x["id"])))[start : start + max(1, min(limit, 50))]
 
 
-def answer(db: sqlite3.Connection, question: str, tag: str = "", owner_id: int = 0) -> dict[str, object]:
-    evidence = search(db, question, tag, owner_id=owner_id)
+def answer(
+    db: sqlite3.Connection,
+    question: str,
+    tag: str = "",
+    owner_id: int = 0,
+    source: str = "",
+    created_after: str = "",
+    created_before: str = "",
+) -> dict[str, object]:
+    evidence = search(
+        db, question, tag, owner_id=owner_id, source=source,
+        created_after=created_after, created_before=created_before
+    )
     if not evidence:
         return {"answer": "В базе знаний не найдено достаточных источников для ответа.", "citations": []}
     return {
@@ -251,9 +287,15 @@ def main() -> int:
     x = sub.add_parser("search")
     x.add_argument("query")
     x.add_argument("--tag", default="")
+    x.add_argument("--source", default="")
+    x.add_argument("--after", dest="created_after", default="")
+    x.add_argument("--before", dest="created_before", default="")
     x = sub.add_parser("ask")
     x.add_argument("question")
     x.add_argument("--tag", default="")
+    x.add_argument("--source", default="")
+    x.add_argument("--after", dest="created_after", default="")
+    x.add_argument("--before", dest="created_before", default="")
     sub.add_parser("export")
     x = sub.add_parser("delete")
     x.add_argument("id", type=int)
@@ -278,10 +320,17 @@ def main() -> int:
             final, text = fetch_url(args.url)
             print(add_document(db, final, final, text, args.tags))
         elif args.cmd == "search":
-            for item in search(db, args.query, args.tag):
+            for item in search(
+                db, args.query, args.tag, source=args.source,
+                created_after=args.created_after, created_before=args.created_before
+            ):
                 print(f"[{item['id']}] {item['title']} ({item['source']})\n  {item['snippet']}\n")
         elif args.cmd == "ask":
-            print(json.dumps(answer(db, args.question, args.tag), ensure_ascii=False, indent=2))
+            result = answer(
+                db, args.question, args.tag, source=args.source,
+                created_after=args.created_after, created_before=args.created_before
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.cmd == "export":
             rows = [
                 dict(r)
