@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shlex
 import sqlite3
 import sys
@@ -76,6 +77,34 @@ class BotAPI:
 
     def send(self, chat_id: int, text: str) -> None:
         self.call("sendMessage", {"chat_id": chat_id, "text": text[:3900], "disable_web_page_preview": "true"})
+
+    def send_document(self, chat_id: int, filename: str, data: bytes, caption: str) -> None:
+        boundary = "----SecondBrain" + secrets.token_hex(16)
+        fields = [
+            ("chat_id", str(chat_id)),
+            ("caption", caption[:900]),
+        ]
+        chunks = []
+        for name, value in fields:
+            chunks.append(
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode()
+            )
+        chunks.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{filename}\"\r\nContent-Type: application/json\r\n\r\n".encode()
+        )
+        chunks.extend((data, f"\r\n--{boundary}--\r\n".encode()))
+        request = urllib.request.Request(
+            self._base + "sendDocument",
+            data=b"".join(chunks),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                result = json.loads(response.read(2_000_000))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Telegram export upload failed; check connectivity and try again") from exc
+        if not isinstance(result, dict) or not result.get("ok"):
+            raise RuntimeError("Telegram rejected the export; check bot settings")
 
 
 def _format_results(
@@ -153,12 +182,16 @@ def handle_update(
     text = str(message.get("text", "")).strip()
     command, _, argument = text.partition(" ")
     command = command.split("@", 1)[0].lower()
-    db = connect(db_path)
+    try:
+        db = connect(db_path)
+    except (sqlite3.Error, OSError, RuntimeError):
+        api.send(chat_id, "Не удалось открыть локальную базу. Проверьте путь и права доступа к файлу.")
+        return
     try:
         if command in ("/start", "/help"):
             api.send(
                 chat_id,
-                "Second Brain: /note заголовок | текст | теги; /search запрос [--tag тег] [--source источник] [--after YYYY-MM-DD] [--before YYYY-MM-DD]; /more страница запрос с теми же фильтрами; /ask вопрос [фильтры]; /url https://…; /delete ID. TXT/MD/PDF до 8 MiB.",
+                "Second Brain: /note заголовок | текст | теги; /search запрос [--tag тег] [--source источник] [--after YYYY-MM-DD] [--before YYYY-MM-DD]; /more страница запрос с теми же фильтрами; /ask вопрос [фильтры]; /url https://…; /delete ID; /export. TXT/MD/PDF до 8 MiB.",
             )
         elif command == "/note":
             fields = [x.strip() for x in argument.split("|", 2)]
@@ -223,6 +256,16 @@ def handle_update(
             removed = db.execute("DELETE FROM documents WHERE id=? AND owner_id=?", (doc_id, user_id)).rowcount
             db.commit()
             api.send(chat_id, "Источник удалён." if removed else "Источник не найден.")
+        elif command == "/export":
+            rows = [dict(row) for row in db.execute(
+                "SELECT id,source,title,content,tags,created_at,status FROM documents WHERE owner_id=? ORDER BY id",
+                (user_id,),
+            )]
+            payload = json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
+            if len(payload) > MAX_BYTES:
+                api.send(chat_id, "Экспорт превышает 8 MiB. Удалите ненужные источники и повторите.")
+                return
+            api.send_document(chat_id, "second-brain-export.json", payload, f"Экспорт: {len(rows)} источников")
         elif command == "/confirm":
             pending = pending_files.pop(user_id, None)
             if pending is None or time.time() - float(pending.get("created_at", 0)) > 600:

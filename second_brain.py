@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import os
 import re
 import socket
 import sqlite3
@@ -22,6 +23,12 @@ MAX_BYTES = 8 * 1024 * 1024
 
 def connect(path: str | Path) -> sqlite3.Connection:
     db = sqlite3.connect(path)
+    if os.name == "posix" and str(path) != ":memory:":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            db.close()
+            raise RuntimeError("Could not restrict the database file to the current user") from None
     db.row_factory = sqlite3.Row
     db.executescript("""
     CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY, source TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,

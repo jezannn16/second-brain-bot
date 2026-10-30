@@ -67,7 +67,7 @@ set -a; . .env; set +a
 python telegram_bot.py
 ```
 
-The bot replies only in private chats to allow-listed users. `/search` and `/ask` support `--tag`, `--source`, `--after YYYY-MM-DD`, and `--before YYYY-MM-DD`; `/more` preserves those filters and shows a next-page command only when more matches exist. Start with synthetic notes and your own private bot/chat. Revoke a temporary token through BotFather after testing. Uploaded and fetched document content is stored locally.
+The bot replies only in private chats to allow-listed users. `/search` and `/ask` support `--tag`, `--source`, `--after YYYY-MM-DD`, and `--before YYYY-MM-DD`; `/more` preserves those filters and shows a next-page command only when more matches exist. `/export` sends the requesting user's sources as a JSON file, capped at 8 MiB. Start with synthetic notes and your own private bot/chat. Revoke a temporary token through BotFather after testing. Uploaded and fetched document content is stored locally.
 
 ## Tests and CI
 
@@ -86,7 +86,7 @@ This live check performs one public GET and stores nothing remotely. Network ava
 
 ## Data and scope
 
-The SQLite database contains raw imported content and, when Telegram is used, Telegram user IDs. It is local and unencrypted; use a private directory and synthetic data for demos. Search uses token frequency without stemming or calibrated ranking. Scanned PDFs may produce no text.
+The SQLite database contains raw imported content and, when Telegram is used, Telegram user IDs. On POSIX systems its file permissions are restricted to the current user (mode 0600), but it remains unencrypted; use a private directory and synthetic data for demos. Search uses token frequency without stemming or calibrated ranking. Scanned PDFs may produce no text.
 
 There is no vector search, LLM generation, webhook server, or public hosting. Telegram uploads are capped at 8 MiB; files over 2 MiB require an in-chat confirmation.
 
