@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import sqlite3
 import stat
 import urllib.error
 import urllib.parse
@@ -10,7 +11,7 @@ import pytest
 import second_brain
 from rag import OpenAIResponsesProvider, ProviderAnswer, RAGProviderError, provider_from_env
 from second_brain import add_document, answer, connect, evaluate_retrieval, extract_pdf, fetch_url, search
-from telegram_bot import BotAPI, _query_filters, _query_tag, handle_update, parse_allowlist
+from telegram_bot import BotAPI, TelegramDeliveryError, _query_filters, _query_tag, handle_update, parse_allowlist
 
 
 def test_duplicate_search_tag_citation_delete(tmp_path):
@@ -520,6 +521,87 @@ def test_telegram_ask_uses_optional_provider_and_displays_only_resolved_citation
     assert len(api.sent) == 1
     assert "A backup is required." in api.sent[0][1]
     assert "Local source" in api.sent[0][1] and "chars" in api.sent[0][1]
+
+
+def test_uncertain_telegram_message_delivery_is_not_retried_or_followed_by_error_reply(tmp_path, capsys):
+    class UncertainAPI:
+        def __init__(self):
+            self.attempts = 0
+
+        def send(self, chat_id, text):
+            self.attempts += 1
+            raise TelegramDeliveryError("uncertain")
+
+    api = UncertainAPI()
+    db_path = str(tmp_path / "brain.db")
+    db = connect(db_path)
+    add_document(db, "note", "Private source", "Synthetic backup procedure and evidence.", owner_id=75)
+    db.commit()
+    db.close()
+    update = {"message": {"from": {"id": 75}, "chat": {"id": 75, "type": "private"}, "text": "/ask backup procedure"}}
+
+    handle_update(update, api, db_path, {75}, {})
+
+    assert api.attempts == 1
+    assert "not retrying" in capsys.readouterr().err
+
+
+def test_botapi_classifies_message_transport_failure_as_delivery_error(monkeypatch):
+    api = BotAPI("123:synthetic-token")
+    calls = []
+
+    def fail_once(method, payload):
+        calls.append((method, payload))
+        raise RuntimeError("synthetic transport failure")
+
+    monkeypatch.setattr(api, "call", fail_once)
+    with pytest.raises(TelegramDeliveryError):
+        api.send(10, "synthetic message")
+    assert len(calls) == 1 and calls[0][0] == "sendMessage"
+
+
+def test_uncertain_telegram_document_delivery_is_not_retried(tmp_path, capsys):
+    class UncertainAPI:
+        def __init__(self):
+            self.attempts = 0
+
+        def send(self, chat_id, text):
+            raise AssertionError("export should use send_document")
+
+        def send_document(self, chat_id, filename, data, caption):
+            self.attempts += 1
+            raise TelegramDeliveryError("uncertain")
+
+    api = UncertainAPI()
+    db_path = str(tmp_path / "brain.db")
+    handle_update(
+        {"message": {"from": {"id": 76}, "chat": {"id": 76, "type": "private"}, "text": "/export"}},
+        api, db_path, {76}, {},
+    )
+    assert api.attempts == 1
+    assert "not retrying" in capsys.readouterr().err
+
+
+def test_telegram_sqlite_read_failure_is_reported_as_database_error(tmp_path, monkeypatch):
+    class FakeAPI:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, chat_id, text):
+            self.sent.append(text)
+
+    def fail_search(*args, **kwargs):
+        raise sqlite3.OperationalError("synthetic database read failure")
+
+    monkeypatch.setattr("telegram_bot.search", fail_search)
+    api = FakeAPI()
+    handle_update(
+        {"message": {"from": {"id": 77}, "chat": {"id": 77, "type": "private"}, "text": "/search synthetic"}},
+        api, str(tmp_path / "brain.db"), {77}, {},
+    )
+    assert len(api.sent) == 1
+    assert "локальную базу" in api.sent[0]
+    assert "не удалось обработать" not in api.sent[0]
 
 
 def test_botapi_document_upload_uses_bounded_timeout_and_multipart(monkeypatch):

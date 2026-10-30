@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import secrets
@@ -20,6 +21,28 @@ from second_brain import MAX_BYTES, add_document, answer, connect, extract_pdf, 
 
 MAX_TELEGRAM_PAGE = 5
 CONFIRM_BYTES = 2 * 1024 * 1024
+
+
+class TelegramDeliveryError(RuntimeError):
+    """A send request failed or has an unknown outcome; it must never be retried."""
+
+
+def _report_delivery_failure() -> None:
+    print("Telegram delivery failed or has an unknown outcome; not retrying this response.", file=sys.stderr)
+
+
+def _send_once(api: BotAPI, chat_id: int, text: str) -> None:
+    try:
+        api.send(chat_id, text)
+    except TelegramDeliveryError:
+        _report_delivery_failure()
+
+
+def _send_document_once(api: BotAPI, chat_id: int, filename: str, data: bytes, caption: str) -> None:
+    try:
+        api.send_document(chat_id, filename, data, caption)
+    except TelegramDeliveryError:
+        _report_delivery_failure()
 
 
 def parse_allowlist(raw: str) -> set[int]:
@@ -48,7 +71,7 @@ class BotAPI:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 result = json.loads(response.read(2_000_000))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, http.client.HTTPException) as exc:
             raise RuntimeError("Telegram API request failed; check network and bot settings") from exc
         if not isinstance(result, dict) or not result.get("ok"):
             raise RuntimeError("Telegram API rejected the request; check bot settings")
@@ -77,7 +100,10 @@ class BotAPI:
         return file_path, data
 
     def send(self, chat_id: int, text: str) -> None:
-        self.call("sendMessage", {"chat_id": chat_id, "text": text[:3900], "disable_web_page_preview": "true"})
+        try:
+            self.call("sendMessage", {"chat_id": chat_id, "text": text[:3900], "disable_web_page_preview": "true"})
+        except RuntimeError as exc:
+            raise TelegramDeliveryError("Telegram message delivery failed or is uncertain") from exc
 
     def send_document(self, chat_id: int, filename: str, data: bytes, caption: str) -> None:
         boundary = "----SecondBrain" + secrets.token_hex(16)
@@ -102,10 +128,10 @@ class BotAPI:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 result = json.loads(response.read(2_000_000))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise RuntimeError("Telegram export upload failed; check connectivity and try again") from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, http.client.HTTPException) as exc:
+            raise TelegramDeliveryError("Telegram export delivery failed or is uncertain") from exc
         if not isinstance(result, dict) or not result.get("ok"):
-            raise RuntimeError("Telegram rejected the export; check bot settings")
+            raise TelegramDeliveryError("Telegram rejected the export")
 
 
 def _format_results(
@@ -187,24 +213,24 @@ def handle_update(
     try:
         db = connect(db_path)
     except (sqlite3.Error, OSError, RuntimeError):
-        api.send(chat_id, "Не удалось открыть локальную базу. Проверьте путь и права доступа к файлу.")
+        _send_once(api, chat_id, "Не удалось открыть локальную базу. Проверьте путь и права доступа к файлу.")
         return
     try:
         if command in ("/start", "/help"):
-            api.send(
+            _send_once(api,
                 chat_id,
                 "Second Brain: /note заголовок | текст | теги; /search запрос [--tag тег] [--source источник] [--after YYYY-MM-DD] [--before YYYY-MM-DD]; /more страница запрос с теми же фильтрами; /ask вопрос [фильтры]; /url https://…; /delete ID; /export. TXT/MD/PDF до 8 MiB.",
             )
         elif command == "/note":
             fields = [x.strip() for x in argument.split("|", 2)]
             if len(fields) < 2 or not fields[0] or not fields[1]:
-                api.send(chat_id, "Формат: /note заголовок | текст | тег1,тег2")
+                _send_once(api, chat_id, "Формат: /note заголовок | текст | тег1,тег2")
             else:
                 _, created = add_document(
                     db, "telegram-note", fields[0], fields[1], fields[2] if len(fields) == 3 else "", user_id
                 )
                 db.commit()
-                api.send(chat_id, "Заметка сохранена." if created else "Такая заметка уже сохранена.")
+                _send_once(api, chat_id, "Заметка сохранена." if created else "Такая заметка уже сохранена.")
         elif command in ("/search", "/more"):
             if command == "/more":
                 page_text, _, query = argument.partition(" ")
@@ -213,20 +239,20 @@ def handle_update(
                     if page < 0:
                         raise ValueError
                 except ValueError:
-                    api.send(chat_id, "Формат: /more номер_страницы запрос")
+                    _send_once(api, chat_id, "Формат: /more номер_страницы запрос")
                     return
             else:
                 page, query = 0, argument
             query, filters = _query_filters(query)
             if not query:
-                api.send(chat_id, "Добавьте слова для поиска: /search текст")
+                _send_once(api, chat_id, "Добавьте слова для поиска: /search текст")
                 return
             rows = search(
                 db, query, tag=filters.get("tag", ""), limit=MAX_TELEGRAM_PAGE + 1,
                 owner_id=user_id, offset=page * MAX_TELEGRAM_PAGE, source=filters.get("source", ""),
                 created_after=filters.get("after", ""), created_before=filters.get("before", "")
             )
-            api.send(chat_id, _format_results(rows[:MAX_TELEGRAM_PAGE], page, query, filters, len(rows) > MAX_TELEGRAM_PAGE))
+            _send_once(api, chat_id, _format_results(rows[:MAX_TELEGRAM_PAGE], page, query, filters, len(rows) > MAX_TELEGRAM_PAGE))
         elif command == "/ask":
             question, filters = _query_filters(argument)
             result = answer(
@@ -240,26 +266,26 @@ def handle_update(
                     f"(v{citation['version']}, chars {citation['offset_start']}–{citation['offset_end']}"
                     f"{', page ' + str(citation['page']) if citation['page'] is not None else ''})\n{citation['passage']}"
                 )
-            api.send(chat_id, "\n\n".join(response))
+            _send_once(api, chat_id, "\n\n".join(response))
         elif command == "/url":
             if not argument:
-                api.send(chat_id, "Формат: /url https://example.org/page")
+                _send_once(api, chat_id, "Формат: /url https://example.org/page")
                 return
             from second_brain import fetch_url
 
             source, content = fetch_url(argument)
             _, created = add_document(db, source, source, content, owner_id=user_id)
             db.commit()
-            api.send(chat_id, "URL сохранён." if created else "Такое содержимое уже сохранено.")
+            _send_once(api, chat_id, "URL сохранён." if created else "Такое содержимое уже сохранено.")
         elif command == "/delete":
             try:
                 doc_id = int(argument)
             except ValueError:
-                api.send(chat_id, "Формат: /delete ID")
+                _send_once(api, chat_id, "Формат: /delete ID")
                 return
             removed = db.execute("DELETE FROM documents WHERE id=? AND owner_id=?", (doc_id, user_id)).rowcount
             db.commit()
-            api.send(chat_id, "Источник удалён." if removed else "Источник не найден.")
+            _send_once(api, chat_id, "Источник удалён." if removed else "Источник не найден.")
         elif command == "/export":
             rows = [dict(row) for row in db.execute(
                 "SELECT id,source,title,content,tags,created_at,status FROM documents WHERE owner_id=? ORDER BY id",
@@ -267,13 +293,13 @@ def handle_update(
             )]
             payload = json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
             if len(payload) > MAX_BYTES:
-                api.send(chat_id, "Экспорт превышает 8 MiB. Удалите ненужные источники и повторите.")
+                _send_once(api, chat_id, "Экспорт превышает 8 MiB. Удалите ненужные источники и повторите.")
                 return
-            api.send_document(chat_id, "second-brain-export.json", payload, f"Экспорт: {len(rows)} источников")
+            _send_document_once(api, chat_id, "second-brain-export.json", payload, f"Экспорт: {len(rows)} источников")
         elif command == "/confirm":
             pending = pending_files.pop(user_id, None)
             if pending is None or time.time() - float(pending.get("created_at", 0)) > 600:
-                api.send(chat_id, "Нет загрузки, ожидающей подтверждения.")
+                _send_once(api, chat_id, "Нет загрузки, ожидающей подтверждения.")
                 return
             _save_telegram_file(api, db, user_id, chat_id, pending)
         elif isinstance(message.get("document"), dict):
@@ -281,29 +307,29 @@ def handle_update(
             name = str(document.get("file_name", "document"))
             size = int(document.get("file_size", 0))
             if Path(name).suffix.lower() not in (".txt", ".md", ".pdf"):
-                api.send(chat_id, "Поддерживаются TXT, Markdown и PDF.")
+                _send_once(api, chat_id, "Поддерживаются TXT, Markdown и PDF.")
                 return
             if size < 1 or size > MAX_BYTES:
-                api.send(chat_id, "Файл должен быть не больше 8 MiB.")
+                _send_once(api, chat_id, "Файл должен быть не больше 8 MiB.")
                 return
             info = {"file_id": str(document.get("file_id", "")), "name": name}
             if size > CONFIRM_BYTES:
                 info["created_at"] = time.time()
                 pending_files[user_id] = info
-                api.send(
+                _send_once(api,
                     chat_id,
                     "Файл больше 2 MiB. Подтвердите импорт командой /confirm (содержимое будет сохранено локально).",
                 )
             else:
                 _save_telegram_file(api, db, user_id, chat_id, info)
         else:
-            api.send(chat_id, "Команда не распознана. Отправьте /help.")
+            _send_once(api, chat_id, "Команда не распознана. Отправьте /help.")
     except (ValueError, OSError, RuntimeError, UnicodeError) as exc:
         db.rollback()
-        api.send(chat_id, f"Не удалось обработать запрос: {exc}")
+        _send_once(api, chat_id, f"Не удалось обработать запрос: {exc}")
     except sqlite3.Error:
         db.rollback()
-        api.send(chat_id, "Не удалось прочитать или сохранить локальную базу. Проверьте доступ к файлу БД и повторите.")
+        _send_once(api, chat_id, "Не удалось прочитать или сохранить локальную базу. Проверьте доступ к файлу БД и повторите.")
     finally:
         db.close()
 
@@ -318,7 +344,7 @@ def _save_telegram_file(api: BotAPI, db, user_id: int, chat_id: int, info: dict[
         content = data.decode("utf-8")
     doc_id, created = add_document(db, f"telegram:{name}", name, content, owner_id=user_id)
     db.commit()
-    api.send(chat_id, f"Источник {'сохранён' if created else 'уже есть'}; ID {doc_id}.")
+    _send_once(api, chat_id, f"Источник {'сохранён' if created else 'уже есть'}; ID {doc_id}.")
 
 
 def run() -> int:

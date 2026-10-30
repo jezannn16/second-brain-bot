@@ -80,7 +80,7 @@ set -a; . .env; set +a
 python telegram_bot.py
 ```
 
-The bot replies only in private chats to allow-listed users. `/search` and `/ask` support `--tag`, `--source`, `--after YYYY-MM-DD`, and `--before YYYY-MM-DD`; `/more` preserves those filters and shows a next-page command only when more matches exist. `/export` sends the requesting user's sources as a JSON file, capped at 8 MiB. Start with synthetic notes and your own private bot/chat. Revoke a temporary token through BotFather after testing. Uploaded and fetched document content is stored locally.
+The bot replies only in private chats to allow-listed users. `/search` and `/ask` support `--tag`, `--source`, `--after YYYY-MM-DD`, and `--before YYYY-MM-DD`; `/more` preserves those filters and shows a next-page command only when more matches exist. `/export` sends the requesting user's sources as a JSON file, capped at 8 MiB. If Telegram delivery fails or its outcome is uncertain, the bot logs that state to stderr and does not send a fallback reply, avoiding an accidental duplicate. Start with synthetic notes and your own private bot/chat. Revoke a temporary token through BotFather after testing. Uploaded and fetched document content is stored locally.
 
 ## Tests and CI
 
