@@ -284,30 +284,62 @@ def answer(
 
 
 def evaluate_retrieval(
-    db: sqlite3.Connection, cases: list[dict[str, str]], top_k: int = 5
+    db: sqlite3.Connection, cases: list[dict[str, object]], top_k: int = 5
 ) -> dict[str, object]:
-    """Measure source retrieval against a small, explicit JSON question set."""
+    """Measure source retrieval, conflicting-source coverage, and no-answer behavior."""
     if not cases:
         raise ValueError("Evaluation set must contain at least one case")
     if top_k < 1:
         raise ValueError("top_k must be positive")
-    reciprocal_ranks = []
-    hits = 0
+    reciprocal_ranks: list[float] = []
+    query_recalls: list[float] = []
+    source_recalls: list[float] = []
+    answerability_hits = 0
+    no_answer_hits = 0
+    no_answer_cases = 0
     for index, case in enumerate(cases, 1):
-        query = case.get("query", "").strip()
-        expected = case.get("expected_source", "")
-        if not query or not expected:
-            raise ValueError(f"Evaluation case {index} requires query and expected_source")
+        if not isinstance(case, dict):
+            raise TypeError(f"Evaluation case {index} must be an object")
+        query_value = case.get("query")
+        if not isinstance(query_value, str) or not query_value.strip():
+            raise ValueError(f"Evaluation case {index} requires a non-empty query")
+        query = query_value.strip()
+        if "expected_sources" in case:
+            raw_expected = case["expected_sources"]
+            if not isinstance(raw_expected, list) or any(not isinstance(source, str) or not source for source in raw_expected):
+                raise ValueError(f"Evaluation case {index} expected_sources must be a list of non-empty strings")
+            expected_sources = set(raw_expected)
+        elif "expected_source" in case:
+            raw_expected = case["expected_source"]
+            if raw_expected is not None and not isinstance(raw_expected, str):
+                raise ValueError(f"Evaluation case {index} expected_source must be a string or null")
+            expected_sources = {raw_expected} if raw_expected else set()
+        else:
+            raise ValueError(f"Evaluation case {index} requires expected_source(s); use [] for no-answer")
         found = search(db, query, limit=top_k)
-        rank = next((position for position, row in enumerate(found, 1) if row["source"] == expected), None)
-        hits += rank is not None
+        found_sources = [str(row["source"]) for row in found]
+        answerable = bool(expected_sources)
+        retrieved_expected = set(found_sources) & expected_sources
+        answerability_hits += bool(found) == answerable
+        if not answerable:
+            no_answer_cases += 1
+            correct_abstention = not found
+            no_answer_hits += correct_abstention
+            query_recalls.append(float(correct_abstention))
+            continue
+        rank = next((position for position, source in enumerate(found_sources, 1) if source in expected_sources), None)
+        query_recalls.append(len(retrieved_expected) / len(expected_sources))
+        source_recalls.append(len(retrieved_expected) / len(expected_sources))
         reciprocal_ranks.append(1 / rank if rank is not None else 0.0)
     count = len(cases)
     return {
         "cases": count,
         "top_k": top_k,
-        "recall_at_k": hits / count,
-        "mean_reciprocal_rank": sum(reciprocal_ranks) / count,
+        "recall_at_k": sum(query_recalls) / count,
+        "source_recall_at_k": sum(source_recalls) / len(source_recalls) if source_recalls else None,
+        "no_answer_accuracy": no_answer_hits / no_answer_cases if no_answer_cases else None,
+        "answerability_accuracy": answerability_hits / count,
+        "mean_reciprocal_rank": sum(reciprocal_ranks) / len(reciprocal_ranks) if reciprocal_ranks else None,
     }
 
 
@@ -389,11 +421,11 @@ def main() -> int:
             print("Deleted")
         elif args.cmd == "evaluate":
             cases = json.loads(Path(args.file).read_text(encoding="utf-8"))
-            if not isinstance(cases, list) or any(not isinstance(case, dict) for case in cases):
+            if not isinstance(cases, list):
                 raise ValueError("Evaluation file must contain a JSON list of objects")
             print(json.dumps(evaluate_retrieval(db, cases, args.top_k), indent=2))
         db.commit()
-    except (ValueError, OSError, UnicodeError) as exc:
+    except (ValueError, TypeError, OSError, UnicodeError) as exc:
         db.rollback()
         print(f"Error: {exc}", file=sys.stderr)
         return 2

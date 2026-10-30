@@ -21,7 +21,7 @@
 
 `ask` is retrieval-only. It does not call an LLM or execute instructions found in stored documents.
 
-Search results and citations include character offsets into stored source text; extracted PDF text also reports the page marker when available. A local evaluation command reports recall@k and mean reciprocal rank against a JSON list of `{\"query\": \"...\", \"expected_source\": \"...\"}` cases, for example `python second_brain.py --db demo.sqlite3 evaluate questions.json --top-k 5`. Scores apply only to that evaluation set and are not a general accuracy claim.
+Search results and citations include character offsets into stored source text; extracted PDF text also reports the page marker when available. A local evaluation command reports recall@k, source recall, answerability accuracy, no-answer accuracy, and mean reciprocal rank against JSON cases using `expected_source`, `expected_sources` for conflicting sources, or `expected_sources: []` when no answer should be found. Scores apply only to that evaluation set and are not a general accuracy claim.
 
 ## Quick start
 
