@@ -2,11 +2,13 @@ import json
 import os
 import socket
 import stat
+import urllib.error
 import urllib.parse
 
 import pytest
 
 import second_brain
+from rag import OpenAIResponsesProvider, ProviderAnswer, RAGProviderError, provider_from_env
 from second_brain import add_document, answer, connect, evaluate_retrieval, extract_pdf, fetch_url, search
 from telegram_bot import BotAPI, _query_filters, _query_tag, handle_update, parse_allowlist
 
@@ -69,6 +71,128 @@ def test_prompt_injection_document_is_only_returned_as_untrusted_citation(tmp_pa
     assert "генеративная модель не подключена" in result["answer"]
     assert instruction in result["citations"][0]["passage"]
     assert db.execute("select count(*) from documents").fetchone()[0] == 1
+
+
+def test_optional_rag_uses_fake_transport_strict_schema_and_validated_local_citation(tmp_path, monkeypatch):
+    db = connect(tmp_path / "brain.db")
+    doc_id, _ = add_document(db, "guide.md", "Guide", "The synthetic policy requires a backup.")
+    seen = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, size):
+            assert size == 1_000_000
+            return json.dumps({
+                "status": "completed",
+                "output": [{"type": "message", "content": [{
+                    "type": "output_text",
+                    "text": json.dumps({"answer": "The policy requires a backup.", "citation_ids": [doc_id]}),
+                }]}],
+            }).encode()
+
+    def fake_open(request, timeout):
+        seen.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_open)
+    provider = OpenAIResponsesProvider("test-key-never-sent", model="test-model", timeout=7)
+    result = answer(db, "What does the policy require?", provider=provider)
+    assert result["mode"] == "llm" and result["answer"] == "The policy requires a backup."
+    assert result["citations"][0]["document_id"] == doc_id
+    request, timeout = seen[0]
+    payload = json.loads(request.data)
+    assert request.full_url == "https://api.openai.com/v1/responses" and timeout == 7
+    assert request.get_header("Authorization") == "Bearer test-key-never-sent"
+    assert payload["store"] is False and payload["tools"] == []
+    assert payload["text"]["format"]["strict"] is True
+    assert "untrusted quoted data" in payload["input"][0]["content"]
+    assert "The synthetic policy requires a backup." in payload["input"][1]["content"]
+
+
+@pytest.mark.parametrize(
+    "answer_value, expected_mode",
+    [
+        (ProviderAnswer("Hallucinated answer", [999]), "retrieval-fallback"),
+        (ProviderAnswer("Uncited answer", []), "retrieval-fallback"),
+        (ProviderAnswer("", []), "abstained"),
+    ],
+)
+def test_rag_validates_ids_requires_citations_and_allows_model_abstention(tmp_path, answer_value, expected_mode):
+    class FakeProvider:
+        calls = 0
+
+        def generate(self, question, evidence):
+            self.calls += 1
+            return answer_value
+
+    db = connect(tmp_path / "brain.db")
+    add_document(db, "source.md", "Source", "The blue box contains three books.")
+    provider = FakeProvider()
+    result = answer(db, "What is in the blue box?", provider=provider)
+    assert result["mode"] == expected_mode
+    assert provider.calls == 1
+    if expected_mode == "retrieval-fallback":
+        assert result["citations"][0]["source"] == "source.md"
+    else:
+        assert result["citations"] == [] and "недостаточно" in result["answer"]
+
+
+def test_rag_is_not_called_without_evidence_or_without_opt_in_key(tmp_path):
+    class FakeProvider:
+        def generate(self, *args):
+            raise AssertionError("empty retrieval must not incur an API call")
+
+    db = connect(tmp_path / "brain.db")
+    result = answer(db, "no evidence", provider=FakeProvider())
+    assert result["mode"] == "abstained" and result["citations"] == []
+    assert provider_from_env({}) is None
+    assert provider_from_env({"OPENAI_API_KEY": " "}) is None
+
+    add_document(db, "weak.md", "Weak evidence", "Only one shared token appears in this unrelated source.")
+    weak = answer(db, "shared totally unsupported question", provider=FakeProvider())
+    assert weak["mode"] == "abstained" and weak["citations"] == []
+
+
+def test_llm_requires_both_explicit_flag_and_api_key():
+    assert provider_from_env({"OPENAI_API_KEY": "test-key"}) is None
+    assert provider_from_env({"SECOND_BRAIN_LLM_ENABLED": "0", "OPENAI_API_KEY": "test-key"}) is None
+    with pytest.raises(ValueError, match="Set OPENAI_API_KEY"):
+        provider_from_env({"SECOND_BRAIN_LLM_ENABLED": "1"})
+    assert isinstance(
+        provider_from_env({"SECOND_BRAIN_LLM_ENABLED": "1", "OPENAI_API_KEY": "test-key"}),
+        OpenAIResponsesProvider,
+    )
+
+
+def test_openai_response_parser_rejects_refusal_malformed_output_and_incomplete():
+    with pytest.raises(RAGProviderError, match="declined"):
+        OpenAIResponsesProvider._parse_response({"status": "completed", "output": [{"type": "message", "content": [{"type": "refusal", "refusal": "No"}]}]})
+    with pytest.raises(RAGProviderError, match="schema"):
+        OpenAIResponsesProvider._parse_response({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"answer": "bad", "citation_ids": [true]}'}]}]})
+    with pytest.raises(RAGProviderError, match="invalid response"):
+        OpenAIResponsesProvider._parse_response({"status": "incomplete", "output": []})
+
+
+def test_openai_http_error_is_sanitized_and_does_not_retry(monkeypatch):
+    attempts = []
+
+    def fake_open(request, timeout):
+        attempts.append(request)
+        raise urllib.error.HTTPError(
+            request.full_url, 401, "Unauthorized", {}, None
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_open)
+    provider = OpenAIResponsesProvider("test-key-never-sent")
+    with pytest.raises(RAGProviderError, match="HTTP 401") as caught:
+        provider.generate("question", [])
+    assert "test-key-never-sent" not in str(caught.value)
+    assert len(attempts) == 1
 
 
 def test_document_ownership_isolation(tmp_path):
@@ -241,6 +365,33 @@ def test_telegram_export_is_owner_scoped_and_returns_json_file(tmp_path):
     assert [row["title"] for row in exported] == ["Mine"]
     assert "another user's private data" not in data.decode()
     assert "1 источников" in caption
+
+
+def test_telegram_ask_uses_optional_provider_and_displays_only_resolved_citation(tmp_path):
+    class FakeAPI:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, chat_id, text):
+            self.sent.append((chat_id, text))
+
+    class FakeProvider:
+        def generate(self, question, evidence):
+            return ProviderAnswer("A backup is required.", [int(evidence[0]["id"])])
+
+    api = FakeAPI()
+    db_path = str(tmp_path / "brain.db")
+    db = connect(db_path)
+    add_document(db, "private.md", "Local source", "The policy says a backup is required.", owner_id=75)
+    db.commit()
+    db.close()
+    update = {"message": {"from": {"id": 75}, "chat": {"id": 75, "type": "private"}, "text": "/ask what does policy say about backup"}}
+
+    handle_update(update, api, db_path, {75}, {}, FakeProvider())
+
+    assert len(api.sent) == 1
+    assert "A backup is required." in api.sent[0][1]
+    assert "Local source" in api.sent[0][1] and "chars" in api.sent[0][1]
 
 
 def test_botapi_document_upload_uses_bounded_timeout_and_multipart(monkeypatch):

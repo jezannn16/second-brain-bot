@@ -15,11 +15,22 @@
 | Notes and files | Save notes and import `.txt`, `.md`, and `.pdf` files (PDF support is optional) |
 | Public pages | Fetch bounded HTTP(S) text/HTML from public IP addresses, validating redirects |
 | Retrieval | Search Russian and English text, filter by tag, exact source, and inclusive creation dates, then show source snippets |
-| Answers | Return matching passages with citations, or say when there is no evidence |
+| Answers | Retrieval citations by default; optional, explicitly enabled LLM answers with validated source IDs |
 | Telegram | Optional allow-listed long-poll bot for private save/search/ask workflows |
 | Storage | Local SQLite; no account or model API key required |
 
-`ask` is retrieval-only. It does not call an LLM or execute instructions found in stored documents.
+`ask` is retrieval-only by default. Generation requires both the explicit opt-in `SECOND_BRAIN_LLM_ENABLED=1` and `OPENAI_API_KEY`; setting the key alone never sends notes or questions to a provider. It never executes instructions found in stored documents. The optional OpenAI Responses API adapter has no tools, uses strict JSON-schema output, sends `store: false`, and validates every returned citation ID against the retrieved local documents. It abstains before calling the provider if retrieved text overlaps fewer than two distinct query terms (or no term for a one-word query). It returns a retrieval-only fallback if the provider errors, refuses, emits malformed output, or cites a non-retrieved source. No request is made when retrieval finds no evidence.
+
+To explicitly opt into generation, set the flag and key only in the local process environment (never in source control or chat). `SECOND_BRAIN_LLM_MODEL` optionally selects a model; the default is `gpt-6-luna`.
+
+```sh
+export SECOND_BRAIN_LLM_ENABLED=1
+export OPENAI_API_KEY='…'
+export SECOND_BRAIN_LLM_MODEL='gpt-6-luna' # optional
+python second_brain.py --db /tmp/brain-demo.sqlite3 ask 'What does the note recommend?'
+```
+
+An enabled request sends the question and up to five retrieved passages (each capped at 1,600 characters) to OpenAI, which may incur API charges and disclose those passages to that provider. The app does not make paid calls during tests. It uses a single bounded-time request without automatic retries to avoid duplicate charges. Structured output constrains format, while source-ID validation constrains citations; it cannot prove that every generated claim is entailed by its passage, so users should inspect the attached excerpts.
 
 Search results and citations include character offsets into stored source text; extracted PDF text also reports the page marker when available. A local evaluation command reports recall@k, source recall, answerability accuracy, no-answer accuracy, and mean reciprocal rank against JSON cases using `expected_source`, `expected_sources` for conflicting sources, or `expected_sources: []` when no answer should be found. Scores apply only to that evaluation set and are not a general accuracy claim.
 
@@ -90,6 +101,6 @@ This live check performs one public GET and stores nothing remotely. Network ava
 
 The SQLite database contains raw imported content and, when Telegram is used, Telegram user IDs. On POSIX systems its file permissions are restricted to the current user (mode 0600), but it remains unencrypted; use a private directory and synthetic data for demos. Search uses token frequency without stemming or calibrated ranking. Scanned PDFs may produce no text.
 
-There is no vector search, LLM generation, webhook server, or public hosting. Telegram uploads are capped at 8 MiB; files over 2 MiB require an in-chat confirmation.
+There is no vector search, automatic tool execution, webhook server, or public hosting. Telegram uploads are capped at 8 MiB; files over 2 MiB require an in-chat confirmation.
 
 See [demo steps](docs/demo.md) and [operator notes](telegram_bot.py) for the local workflow and bot entry point.

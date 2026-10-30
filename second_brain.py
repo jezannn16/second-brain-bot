@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
+from rag import ProviderAnswer, RAGProvider, RAGProviderError, provider_from_env
+
 MAX_BYTES = 8 * 1024 * 1024
 
 
@@ -258,29 +260,91 @@ def answer(
     source: str = "",
     created_after: str = "",
     created_before: str = "",
+    provider: RAGProvider | None = None,
 ) -> dict[str, object]:
     evidence = search(
         db, question, tag, owner_id=owner_id, source=source,
         created_after=created_after, created_before=created_before
     )
     if not evidence:
-        return {"answer": "В базе знаний не найдено достаточных источников для ответа.", "citations": []}
+        return {
+            "answer": "В базе знаний не найдено достаточных источников для ответа.",
+            "citations": [],
+            "mode": "abstained" if provider is not None else "retrieval-only",
+        }
+    if provider is not None:
+        if not _has_sufficient_lexical_evidence(question, evidence):
+            return {
+                "answer": "В найденных фрагментах недостаточно совпадающих данных для безопасного ответа.",
+                "citations": [],
+                "mode": "abstained",
+            }
+        try:
+            generated = provider.generate(question, evidence[:5])
+            if not isinstance(generated, ProviderAnswer):
+                raise RAGProviderError("Optional LLM returned an invalid answer object")
+            if (
+                not isinstance(generated.answer, str)
+                or not isinstance(generated.citation_ids, list)
+                or any(type(doc_id) is not int for doc_id in generated.citation_ids)
+            ):
+                raise RAGProviderError("Optional LLM output did not match the required answer schema")
+            answer_text = generated.answer.strip()
+            citation_ids = generated.citation_ids
+            allowed_ids = {int(item["id"]) for item in evidence}
+            if len(citation_ids) != len(set(citation_ids)) or any(doc_id not in allowed_ids for doc_id in citation_ids):
+                raise RAGProviderError("Optional LLM cited a source outside the retrieved evidence")
+            if not answer_text:
+                if citation_ids:
+                    raise RAGProviderError("Optional LLM returned citations without an answer")
+                return {
+                    "answer": "В найденных фрагментах недостаточно данных для ответа.",
+                    "citations": [],
+                    "mode": "abstained",
+                }
+            if not citation_ids:
+                raise RAGProviderError("Optional LLM answer did not cite any retrieved source")
+            cited = [item for item in evidence if int(item["id"]) in citation_ids]
+            return {"answer": answer_text, "citations": _citations(cited), "mode": "llm"}
+        except RAGProviderError as exc:
+            return {
+                "answer": f"{exc}. Доступен безопасный retrieval-only режим; найденные фрагменты приведены ниже.",
+                "citations": _citations(evidence),
+                "mode": "retrieval-fallback",
+            }
     return {
         "answer": "Найдены фрагменты, связанные с вопросом. Проверьте цитаты ниже; генеративная модель не подключена.",
-        "citations": [
-            {
-                "document_id": x["id"],
-                "source": x["source"],
-                "title": x["title"],
-                "version": x["version"],
-                "passage": x["snippet"],
-                "offset_start": x["offset_start"],
-                "offset_end": x["offset_end"],
-                "page": x["page"],
-            }
-            for x in evidence
-        ],
+        "citations": _citations(evidence),
+        "mode": "retrieval-only",
     }
+
+
+def _citations(evidence: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "document_id": x["id"],
+            "source": x["source"],
+            "title": x["title"],
+            "version": x["version"],
+            "passage": x["snippet"],
+            "offset_start": x["offset_start"],
+            "offset_end": x["offset_end"],
+            "page": x["page"],
+        }
+        for x in evidence
+    ]
+
+
+def _has_sufficient_lexical_evidence(question: str, evidence: list[dict[str, object]]) -> bool:
+    terms = set(re.findall(r"[\w-]+", question.casefold()))
+    if not terms:
+        return False
+    required = min(2, len(terms))
+    return any(
+        sum(term in set(re.findall(r"[\w-]+", str(item.get("content", "")).casefold())) for term in terms)
+        >= required
+        for item in evidence
+    )
 
 
 def evaluate_retrieval(
@@ -404,7 +468,8 @@ def main() -> int:
         elif args.cmd == "ask":
             result = answer(
                 db, args.question, args.tag, source=args.source,
-                created_after=args.created_after, created_before=args.created_before
+                created_after=args.created_after, created_before=args.created_before,
+                provider=provider_from_env(),
             )
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.cmd == "export":
@@ -425,7 +490,7 @@ def main() -> int:
                 raise ValueError("Evaluation file must contain a JSON list of objects")
             print(json.dumps(evaluate_retrieval(db, cases, args.top_k), indent=2))
         db.commit()
-    except (ValueError, TypeError, OSError, UnicodeError) as exc:
+    except (ValueError, TypeError, OSError, UnicodeError, RAGProviderError) as exc:
         db.rollback()
         print(f"Error: {exc}", file=sys.stderr)
         return 2

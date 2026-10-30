@@ -15,6 +15,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from rag import RAGProvider, provider_from_env
 from second_brain import MAX_BYTES, add_document, answer, connect, extract_pdf, search
 
 MAX_TELEGRAM_PAGE = 5
@@ -161,7 +162,8 @@ def _query_filters(value: str) -> tuple[str, dict[str, str]]:
 
 
 def handle_update(
-    update: dict[str, object], api: BotAPI, db_path: str, allowed: set[int], pending_files: dict[int, dict[str, object]]
+    update: dict[str, object], api: BotAPI, db_path: str, allowed: set[int], pending_files: dict[int, dict[str, object]],
+    provider: RAGProvider | None = None,
 ) -> None:
     message = update.get("message")
     if not isinstance(message, dict):
@@ -229,7 +231,7 @@ def handle_update(
             question, filters = _query_filters(argument)
             result = answer(
                 db, question, owner_id=user_id, tag=filters.get("tag", ""), source=filters.get("source", ""),
-                created_after=filters.get("after", ""), created_before=filters.get("before", "")
+                created_after=filters.get("after", ""), created_before=filters.get("before", ""), provider=provider,
             )
             response = [str(result["answer"])]
             for citation in result["citations"]:
@@ -330,6 +332,7 @@ def run() -> int:
         return 2
     offset = 0
     pending_files: dict[int, dict[str, object]] = {}
+    provider = provider_from_env()
     backoff = 1
     while True:
         try:
@@ -338,7 +341,7 @@ def run() -> int:
             )
             for update in updates if isinstance(updates, list) else []:
                 if isinstance(update, dict):
-                    handle_update(update, api, db_path, allowed, pending_files)
+                    handle_update(update, api, db_path, allowed, pending_files, provider)
                     offset = max(offset, int(update.get("update_id", 0)) + 1)
             backoff = 1
         except (RuntimeError, OSError) as exc:

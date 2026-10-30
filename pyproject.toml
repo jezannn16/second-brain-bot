@@ -20,4 +20,4 @@ markers = ["live: opt-in read-only checks against public services"]
 line-length = 120
 
 [tool.setuptools]
-py-modules = ["second_brain", "telegram_bot"]
+py-modules = ["second_brain", "telegram_bot", "rag"]
