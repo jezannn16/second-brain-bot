@@ -240,6 +240,9 @@ def search(
                     "tags": tags,
                     "score": score,
                     "snippet": content[snippet_start : min(len(content), first + 220)],
+                    "offset_start": snippet_start,
+                    "offset_end": min(len(content), first + 220),
+                    "page": int(page_match.group(1)) if (page_match := re.match(r"\[page (\d+)\]", content[snippet_start:])) else None,
                     "content": content,
                 }
             )
@@ -271,9 +274,40 @@ def answer(
                 "title": x["title"],
                 "version": x["version"],
                 "passage": x["snippet"],
+                "offset_start": x["offset_start"],
+                "offset_end": x["offset_end"],
+                "page": x["page"],
             }
             for x in evidence
         ],
+    }
+
+
+def evaluate_retrieval(
+    db: sqlite3.Connection, cases: list[dict[str, str]], top_k: int = 5
+) -> dict[str, object]:
+    """Measure source retrieval against a small, explicit JSON question set."""
+    if not cases:
+        raise ValueError("Evaluation set must contain at least one case")
+    if top_k < 1:
+        raise ValueError("top_k must be positive")
+    reciprocal_ranks = []
+    hits = 0
+    for index, case in enumerate(cases, 1):
+        query = case.get("query", "").strip()
+        expected = case.get("expected_source", "")
+        if not query or not expected:
+            raise ValueError(f"Evaluation case {index} requires query and expected_source")
+        found = search(db, query, limit=top_k)
+        rank = next((position for position, row in enumerate(found, 1) if row["source"] == expected), None)
+        hits += rank is not None
+        reciprocal_ranks.append(1 / rank if rank is not None else 0.0)
+    count = len(cases)
+    return {
+        "cases": count,
+        "top_k": top_k,
+        "recall_at_k": hits / count,
+        "mean_reciprocal_rank": sum(reciprocal_ranks) / count,
     }
 
 
@@ -306,6 +340,9 @@ def main() -> int:
     sub.add_parser("export")
     x = sub.add_parser("delete")
     x.add_argument("id", type=int)
+    x = sub.add_parser("evaluate")
+    x.add_argument("file", help="JSON list of {query, expected_source} objects")
+    x.add_argument("--top-k", type=int, default=5)
     args = p.parse_args()
     db = connect(args.db)
     try:
@@ -350,6 +387,11 @@ def main() -> int:
             if db.execute("DELETE FROM documents WHERE id=? AND owner_id=0", (args.id,)).rowcount == 0:
                 raise ValueError("Document not found")
             print("Deleted")
+        elif args.cmd == "evaluate":
+            cases = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            if not isinstance(cases, list) or any(not isinstance(case, dict) for case in cases):
+                raise ValueError("Evaluation file must contain a JSON list of objects")
+            print(json.dumps(evaluate_retrieval(db, cases, args.top_k), indent=2))
         db.commit()
     except (ValueError, OSError, UnicodeError) as exc:
         db.rollback()

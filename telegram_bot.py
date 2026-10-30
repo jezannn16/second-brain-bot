@@ -234,7 +234,9 @@ def handle_update(
             response = [str(result["answer"])]
             for citation in result["citations"]:
                 response.append(
-                    f"[{citation['document_id']}] {citation['title']} — {citation['source']} (v{citation['version']})\n{citation['passage']}"
+                    f"[{citation['document_id']}] {citation['title']} — {citation['source']} "
+                    f"(v{citation['version']}, chars {citation['offset_start']}–{citation['offset_end']}"
+                    f"{', page ' + str(citation['page']) if citation['page'] is not None else ''})\n{citation['passage']}"
                 )
             api.send(chat_id, "\n\n".join(response))
         elif command == "/url":

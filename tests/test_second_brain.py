@@ -7,7 +7,7 @@ import urllib.parse
 import pytest
 
 import second_brain
-from second_brain import add_document, answer, connect, extract_pdf, fetch_url, search
+from second_brain import add_document, answer, connect, evaluate_retrieval, extract_pdf, fetch_url, search
 from telegram_bot import BotAPI, _query_filters, _query_tag, handle_update, parse_allowlist
 
 
@@ -18,8 +18,34 @@ def test_duplicate_search_tag_citation_delete(tmp_path):
     assert add_document(db, "copy", "different title", "План: читать книгу каждый день")[1] is False
     assert search(db, "читать книгу", "личное")[0]["id"] == ident
     assert answer(db, "читать книгу")["citations"][0]["document_id"] == ident
+    citation = answer(db, "читать книгу")["citations"][0]
+    assert citation["offset_start"] >= 0 and citation["offset_end"] > citation["offset_start"]
     db.execute("DELETE FROM documents WHERE id=?", (ident,))
     assert not search(db, "читать книгу")
+
+
+def test_pdf_page_location_and_retrieval_evaluation(tmp_path):
+    db = connect(tmp_path / "brain.db")
+    add_document(db, "guide.pdf", "Guide", "[page 1] Intro. [page 2] Русский поиск цитата.")
+    add_document(db, "notes.md", "Notes", "Только другие термины для заметок.")
+    result = answer(db, "русский поиск")
+    citation = result["citations"][0]
+    assert citation["page"] == 2
+    assert citation["passage"] == db.execute(
+        "select substr(content, ?, ? ) from documents where source='guide.pdf'",
+        (citation["offset_start"] + 1, citation["offset_end"] - citation["offset_start"]),
+    ).fetchone()[0]
+    metrics = evaluate_retrieval(
+        db,
+        [
+            {"query": "русский поиск", "expected_source": "guide.pdf"},
+            {"query": "несуществующий термин", "expected_source": "missing.txt"},
+        ],
+        top_k=2,
+    )
+    assert metrics == {"cases": 2, "top_k": 2, "recall_at_k": 0.5, "mean_reciprocal_rank": 0.5}
+    with pytest.raises(ValueError, match="at least one"):
+        evaluate_retrieval(db, [])
 
 
 def test_document_ownership_isolation(tmp_path):
