@@ -297,11 +297,16 @@ def handle_update(
                 return
             _send_document_once(api, chat_id, "second-brain-export.json", payload, f"Экспорт: {len(rows)} источников")
         elif command == "/confirm":
-            pending = pending_files.pop(user_id, None)
+            pending = pending_files.get(user_id)
             if pending is None or time.time() - float(pending.get("created_at", 0)) > 600:
+                pending_files.pop(user_id, None)
                 _send_once(api, chat_id, "Нет загрузки, ожидающей подтверждения.")
                 return
             _save_telegram_file(api, db, user_id, chat_id, pending)
+            # Keep the pending item if downloading or saving fails; remove it only
+            # after the document is committed. A failed/uncertain reply is swallowed
+            # by _send_once, so a successful save still consumes this confirmation.
+            pending_files.pop(user_id, None)
         elif isinstance(message.get("document"), dict):
             document = message["document"]
             name = str(document.get("file_name", "document"))

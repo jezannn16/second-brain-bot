@@ -3,6 +3,7 @@ import os
 import socket
 import sqlite3
 import stat
+import time
 import urllib.error
 import urllib.parse
 
@@ -433,6 +434,73 @@ def test_telegram_large_file_confirmation_and_expiry(tmp_path):
         api, db_path, {70}, {70: {"file_id": "file-1", "name": "notes.txt", "created_at": 0}},
     )
     assert "ожидающей подтверждения" in api.sent[-1]
+
+
+def test_telegram_confirm_preserves_pending_file_after_download_failure(tmp_path):
+    class FlakyAPI:
+        def __init__(self):
+            self.sent = []
+            self.fail = True
+
+        def send(self, chat_id, text):
+            self.sent.append(text)
+
+        def download(self, file_id):
+            assert file_id == "file-1"
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("temporary download error")
+            return "notes.txt", b"Synthetic note after retry"
+
+    api = FlakyAPI()
+    db_path = str(tmp_path / "brain.db")
+    pending = {70: {"file_id": "file-1", "name": "notes.txt", "created_at": time.time()}}
+    update = {"message": {"from": {"id": 70}, "chat": {"id": 70, "type": "private"}, "text": "/confirm"}}
+
+    handle_update(update, api, db_path, {70}, pending)
+    assert pending[70]["file_id"] == "file-1"
+    assert "Не удалось обработать запрос" in api.sent[-1]
+
+    handle_update(update, api, db_path, {70}, pending)
+    assert 70 not in pending
+    db = connect(db_path)
+    assert db.execute("select count(*) from documents where owner_id=70").fetchone()[0] == 1
+    db.close()
+
+
+def test_telegram_confirm_keeps_pending_file_when_database_write_fails(tmp_path):
+    class FakeAPI:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, chat_id, text):
+            self.sent.append(text)
+
+        def download(self, file_id):
+            return "notes.txt", b"Synthetic note"
+
+    api = FakeAPI()
+    db_path = str(tmp_path / "brain.db")
+    db = connect(db_path)
+    db.execute("CREATE TRIGGER reject_document BEFORE INSERT ON documents BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END")
+    db.commit()
+    db.close()
+    pending = {70: {"file_id": "file-1", "name": "notes.txt", "created_at": time.time()}}
+    update = {"message": {"from": {"id": 70}, "chat": {"id": 70, "type": "private"}, "text": "/confirm"}}
+
+    handle_update(update, api, db_path, {70}, pending)
+    assert pending[70]["file_id"] == "file-1"
+    assert "локальную базу" in api.sent[-1]
+
+    db = connect(db_path)
+    db.execute("DROP TRIGGER reject_document")
+    db.commit()
+    db.close()
+    handle_update(update, api, db_path, {70}, pending)
+    assert 70 not in pending
+    db = connect(db_path)
+    assert db.execute("select count(*) from documents where owner_id=70").fetchone()[0] == 1
+    db.close()
 
 
 def test_malformed_telegram_user_ids_are_ignored(tmp_path):
