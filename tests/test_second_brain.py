@@ -6,10 +6,12 @@ import stat
 import time
 import urllib.error
 import urllib.parse
+from pathlib import Path
 
 import pytest
 
 import second_brain
+from evaluate_synthetic import evaluate_dataset
 from rag import OpenAIResponsesProvider, ProviderAnswer, RAGProviderError, provider_from_env
 from second_brain import add_document, answer, connect, evaluate_retrieval, extract_pdf, fetch_url, search
 from telegram_bot import BotAPI, TelegramDeliveryError, _query_filters, _query_tag, handle_update, parse_allowlist
@@ -63,6 +65,22 @@ def test_pdf_page_location_and_retrieval_evaluation(tmp_path):
         evaluate_retrieval(db, [])
     with pytest.raises(ValueError, match="non-empty query"):
         evaluate_retrieval(db, [{"query": 42, "expected_source": "guide.pdf"}])
+
+
+def test_synthetic_rag_evaluation_separates_retrieval_contract_and_model_accuracy():
+    report = evaluate_dataset(Path(__file__).parent.parent / "eval" / "synthetic_rag.json")
+    assert report["dataset"] == {
+        "name": "Second Brain synthetic RAG evaluation v1", "synthetic": True, "documents": 6, "cases": 9,
+    }
+    assert report["retrieval"]["recall_at_k"] == 1.0
+    assert report["retrieval"]["source_recall_at_k"] == 1.0
+    assert report["retrieval"]["no_answer_accuracy"] == 1.0
+    contract = report["provider_contract_probes"]
+    assert contract["all_contract_checks_passed"]
+    assert contract["citation_outside_retrieval_rejected"]
+    assert contract["no_evidence_abstains_without_provider_call"]
+    assert contract["unsupported_claim_with_valid_citation_is_not_detected"]
+    assert contract["real_model_accuracy"] is None
 
 
 def test_prompt_injection_document_is_only_returned_as_untrusted_citation(tmp_path):
