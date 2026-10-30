@@ -327,12 +327,12 @@ def run() -> int:
         allowed = parse_allowlist(os.environ.get("TELEGRAM_ALLOWED_USER_IDS", ""))
         db_path = os.environ.get("SECOND_BRAIN_DB", "second_brain.sqlite3")
         api = BotAPI(token)
+        provider = provider_from_env()
     except ValueError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
     offset = 0
     pending_files: dict[int, dict[str, object]] = {}
-    provider = provider_from_env()
     backoff = 1
     while True:
         try:

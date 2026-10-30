@@ -21,6 +21,7 @@ from pathlib import Path
 from rag import ProviderAnswer, RAGProvider, RAGProviderError, provider_from_env
 
 MAX_BYTES = 8 * 1024 * 1024
+MAX_QUERY_CHARS = 4_000
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
@@ -199,6 +200,8 @@ def search(
     created_after: str = "",
     created_before: str = "",
 ) -> list[dict[str, object]]:
+    if not isinstance(query, str) or len(query) > MAX_QUERY_CHARS:
+        raise ValueError("Search query exceeds the 4,000 character limit")
     for value, label in ((created_after, "--after"), (created_before, "--before")):
         if value:
             try:
@@ -273,7 +276,7 @@ def answer(
             "mode": "abstained" if provider is not None else "retrieval-only",
         }
     if provider is not None:
-        if not _has_sufficient_lexical_evidence(question, evidence):
+        if not _has_sufficient_lexical_evidence(question, evidence[:5]):
             return {
                 "answer": "В найденных фрагментах недостаточно совпадающих данных для безопасного ответа.",
                 "citations": [],
@@ -290,6 +293,8 @@ def answer(
             ):
                 raise RAGProviderError("Optional LLM output did not match the required answer schema")
             answer_text = generated.answer.strip()
+            if len(answer_text) > 4_000:
+                raise RAGProviderError("Optional LLM answer exceeded the response size limit")
             citation_ids = generated.citation_ids
             allowed_ids = {int(item["id"]) for item in evidence}
             if len(citation_ids) != len(set(citation_ids)) or any(doc_id not in allowed_ids for doc_id in citation_ids):
@@ -309,6 +314,12 @@ def answer(
         except RAGProviderError as exc:
             return {
                 "answer": f"{exc}. Доступен безопасный retrieval-only режим; найденные фрагменты приведены ниже.",
+                "citations": _citations(evidence),
+                "mode": "retrieval-fallback",
+            }
+        except (RuntimeError, TypeError, ValueError, KeyError, IndexError, OSError, http.client.HTTPException):
+            return {
+                "answer": "Дополнительная генерация сейчас недоступна; приведены найденные локальные фрагменты.",
                 "citations": _citations(evidence),
                 "mode": "retrieval-fallback",
             }
